@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # https://github.com/Nyr/openvpn-install
 #
@@ -6,19 +6,41 @@
 
 # Make sure only root can run our script
 if [ "$EUID" -ne 0 ]
-  then echo "Please run as root"
+	then
+	# try privilege escalation
+	sudo "$0" "$@"
   exit
 fi
 
 
+function print_banner(){
+	echo -e "
+\033[0;32m         ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+\033[0;32m         ████░▄▄▄█▄▄░█▀▄▄▀█▀▄▄▀█░▄▄████
+\033[0;32m         ████░▄▄▄█▀▄██░██░█░▀▀░█▄▄▀████
+\033[0;32m         ████░▀▀▀█▄▄▄██▄▄██░████▄▄▄████
+\033[0;32m         ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+\033[0;32m               _                 _     
+\033[0;33m              | |               | |    
+\033[0;33m           ___| | ___  _   _  __| |___ 
+\033[0;33m          / __| |/ _ \\| | | |/ _\` / __| 
+\033[0;33m         | (__| | (_) | |_| | (_| \\__ \\
+\033[0;33m          \\___|_|\\___/ \\__,_|\\__,_|___/
+\033[0;30m             DevOps Engineers - 2022
+\033[0m
+"
+}
 
 function export_params() {
 	# the parameters are:
 	# -i | --ip = the IP address
+	# -c | --client = the client name
 	# -p | --port = the port number for vpn server
-	# -P | --protocol
-	# -d | --dns ["local", "google", "1.1.1.1", "opendns","quad9","adguard"]
+	# -P | --protocol [tcp|udp] = the protocol for vpn server
+	# -d | --dns ["local", "google", "1.1.1.1", "opendns","quad9","adguard"] = the dns server for vpn client
 	# -w | --wizzard = the wizzard mode, get values using read function
+	# -h | --help = the help message
+
 
 	while [ $# -gt 0 ]; do
 		case "$1" in
@@ -30,6 +52,10 @@ function export_params() {
 				shift
 				PORT="$1"
 				;;
+			-c | --client)
+				shift
+				CLIENT="$1"
+				;;
 			-P | --protocol)
 				shift
 				PROTOCOL="$1"
@@ -40,6 +66,23 @@ function export_params() {
 				;;
 			-w | --wizzard)
 				WIZZARD=true
+				;;
+			-h | --help)
+				echo "Usage: $0 [options]"
+				echo "Description:"
+				echo "		This script will install OpenVPN on your Debian, Ubuntu or CentOS server."
+				echo "Options:"
+				echo "  -i, --ip <ip>             The IP address of the server"
+				echo "  -p, --port <port>         The port number of the server"
+				echo "  -c, --client <client>     The client name"
+				echo "  -P, --protocol <protocol> The protocol [tcp|udp]"
+				echo "  -d, --dns <dns>           The DNS server [local|google|1.1.1.1|opendns|quad9|adguard]"
+				echo "  -w, --wizzard             The wizzard mode"
+				echo "  -h, --help                Show this help message"
+				echo "Examples:"
+				echo "  $0 -i 264.0.157.11 -p 1194 -c client1 -P udp -d google"
+				echo "  $0 -w"
+				exit 0
 				;;
 			*)
 				echo "Invalid parameter was passed: $1"
@@ -54,6 +97,11 @@ function export_params() {
 # Detect Debian users running the script with "sh" instead of bash
 if readlink /proc/$$/exe | grep -q "dash"; then
 	echo 'This installer needs to be run with "bash", not "sh".'
+	if [ -x /bin/bash ]; then
+		exec /bin/bash "$0" "$@"
+	else
+		echo 'Please install bash and run this installer again.'
+	fi	
 	exit
 fi
 
@@ -162,11 +210,11 @@ if [[ ! -e /etc/openvpn/server/server.conf ]]; then
 		apt-get install -y wget
 	fi
 	clear
-	echo 'Welcome to this OpenVPN road warrior installer!'
+	print_banner
 	# If system has a single IPv4, it is selected automatically. Else, ask the user
 
-	if [-n "$IP"]; then
-		IP=$(wget -qO- ipv4.icanhazip.com)
+	if [ -n "$IP"]; then
+		ip=$IP
 	elif [[ $(ip -4 addr | grep inet | grep -vEc '127(\.[0-9]{1,3}){3}') -eq 1 ]]; then
 		ip=$(ip -4 addr | grep inet | grep -vE '127(\.[0-9]{1,3}){3}' | cut -d '/' -f 1 | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}')
 	else
@@ -272,16 +320,19 @@ if [[ ! -e /etc/openvpn/server/server.conf ]]; then
 			echo "$dns: invalid selection."
 			read -p "DNS server [1]: " dns
 		done
-	fi 
-	[[ -z "$dns"]] && dns="1"
+	fi
 
+	[[ -z "$dns" ]] && dns="1"
 
 	if [ "$WIZZARD" = true ]; then
 		echo "Enter a name for the first client:"
 		read -p "Name [client]: " unsanitized_client
 		# Allow a limited set of characters to avoid conflicts
 		client=$(sed 's/[^0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-]/_/g' <<< "$unsanitized_client")
+	else
+		client=$CLIENT
 	fi
+
 	[[ -z "$client" ]] && client="client"
 	echo
 	echo "OpenVPN installation is ready to begin."
@@ -522,7 +573,8 @@ verb 3" > /etc/openvpn/server/client-common.txt
 	echo "New clients can be added by running this script again."
 else
 	clear
-	echo "OpenVPN is already installed."
+	print_banner
+	echo "- OpenVPN is already installed. -"
 	echo
 	echo "Select an option:"
 	echo "   1) Add a new client"
