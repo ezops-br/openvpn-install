@@ -4,6 +4,53 @@
 #
 # Copyright (c) 2013 Nyr. Released under the MIT License.
 
+# Make sure only root can run our script
+if [ ! -d "${ROOT}" ]; then
+	echo "This script must be run as root" 1>&2
+	exit 1
+fi
+
+
+
+
+function export_params() {
+	# the parameters are:
+	# -i | --ip = the IP address
+	# -p | --port = the port number for vpn server
+	# -P | --protocol
+	# -d | --dns ["local", "google", "1.1.1.1", "opendns","quad9","adguard"]
+	# -w | --wizzard = the wizzard mode, get values using read function
+
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			-i | --ip)
+				shift
+				IP="$1"
+				;;
+			-p | --port)
+				shift
+				PORT="$1"
+				;;
+			-P | --protocol)
+				shift
+				PROTOCOL="$1"
+				;;
+			-d | --dns)
+				shift
+				DNS="$1"
+				;;
+			-w | --wizzard)
+				WIZZARD=true
+				;;
+			*)
+				echo "Invalid parameter was passed: $1"
+				exit 1
+				;;
+		esac
+		shift
+	done
+}
+
 
 # Detect Debian users running the script with "sh" instead of bash
 if readlink /proc/$$/exe | grep -q "dash"; then
@@ -13,6 +60,10 @@ fi
 
 # Discard stdin. Needed when running from an one-liner which includes a newline
 read -N 999999 -t 0.001
+
+# parameters parsing
+export_params "$@"
+
 
 # Detect OpenVZ 6
 if [[ $(uname -r | cut -d "." -f 1) -eq 2 ]]; then
@@ -102,25 +153,36 @@ if [[ ! -e /etc/openvpn/server/server.conf ]]; then
 	# Detect some Debian minimal setups where neither wget nor curl are installed
 	if ! hash wget 2>/dev/null && ! hash curl 2>/dev/null; then
 		echo "Wget is required to use this installer."
-		read -n1 -r -p "Press any key to install Wget and continue..."
+		
+		# if wizzard mode is enabled
+		if [ "$WIZZARD" = true ]; then
+			read -n1 -r -p "Press any key to install Wget and continue..."
+		fi
+
 		apt-get update
 		apt-get install -y wget
 	fi
 	clear
 	echo 'Welcome to this OpenVPN road warrior installer!'
 	# If system has a single IPv4, it is selected automatically. Else, ask the user
-	if [[ $(ip -4 addr | grep inet | grep -vEc '127(\.[0-9]{1,3}){3}') -eq 1 ]]; then
+
+	if [-n "$IP"]; then
+		IP=$(wget -qO- ipv4.icanhazip.com)
+	elif [[ $(ip -4 addr | grep inet | grep -vEc '127(\.[0-9]{1,3}){3}') -eq 1 ]]; then
 		ip=$(ip -4 addr | grep inet | grep -vE '127(\.[0-9]{1,3}){3}' | cut -d '/' -f 1 | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}')
 	else
+
 		number_of_ip=$(ip -4 addr | grep inet | grep -vEc '127(\.[0-9]{1,3}){3}')
-		echo
-		echo "Which IPv4 address should be used?"
-		ip -4 addr | grep inet | grep -vE '127(\.[0-9]{1,3}){3}' | cut -d '/' -f 1 | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | nl -s ') '
-		read -p "IPv4 address [1]: " ip_number
-		until [[ -z "$ip_number" || "$ip_number" =~ ^[0-9]+$ && "$ip_number" -le "$number_of_ip" ]]; do
-			echo "$ip_number: invalid selection."
+		if [ "$WIZZARD" = true ]; then
+			echo "Which IPv4 address should be used?"
+			ip -4 addr | grep inet | grep -vE '127(\.[0-9]{1,3}){3}' | cut -d '/' -f 1 | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | nl -s ') '
 			read -p "IPv4 address [1]: " ip_number
-		done
+			until [[ -z "$ip_number" || "$ip_number" =~ ^[0-9]+$ && "$ip_number" -le "$number_of_ip" ]]; do
+				echo "$ip_number: invalid selection."
+				read -p "IPv4 address [1]: " ip_number
+			done
+		fi
+
 		[[ -z "$ip_number" ]] && ip_number="1"
 		ip=$(ip -4 addr | grep inet | grep -vE '127(\.[0-9]{1,3}){3}' | cut -d '/' -f 1 | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | sed -n "$ip_number"p)
 	fi
@@ -130,12 +192,14 @@ if [[ ! -e /etc/openvpn/server/server.conf ]]; then
 		echo "This server is behind NAT. What is the public IPv4 address or hostname?"
 		# Get public IP and sanitize with grep
 		get_public_ip=$(grep -m 1 -oE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' <<< "$(wget -T 10 -t 1 -4qO- "http://ip1.dynupdate.no-ip.com/" || curl -m 10 -4Ls "http://ip1.dynupdate.no-ip.com/")")
-		read -p "Public IPv4 address / hostname [$get_public_ip]: " public_ip
-		# If the checkip service is unavailable and user didn't provide input, ask again
-		until [[ -n "$get_public_ip" || -n "$public_ip" ]]; do
-			echo "Invalid input."
-			read -p "Public IPv4 address / hostname: " public_ip
-		done
+		if [ "$WIZZARD" = true ]; then
+			read -p "Public IPv4 address / hostname [$get_public_ip]: " public_ip
+			# If the checkip service is unavailable and user didn't provide input, ask again
+			until [[ -n "$get_public_ip" || -n "$public_ip" ]]; do
+				echo "Invalid input."
+				read -p "Public IPv4 address / hostname: " public_ip
+			done
+		fi
 		[[ -z "$public_ip" ]] && public_ip="$get_public_ip"
 	fi
 	# If system has a single IPv6, it is selected automatically
@@ -145,60 +209,80 @@ if [[ ! -e /etc/openvpn/server/server.conf ]]; then
 	# If system has multiple IPv6, ask the user to select one
 	if [[ $(ip -6 addr | grep -c 'inet6 [23]') -gt 1 ]]; then
 		number_of_ip6=$(ip -6 addr | grep -c 'inet6 [23]')
-		echo
-		echo "Which IPv6 address should be used?"
-		ip -6 addr | grep 'inet6 [23]' | cut -d '/' -f 1 | grep -oE '([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}' | nl -s ') '
-		read -p "IPv6 address [1]: " ip6_number
-		until [[ -z "$ip6_number" || "$ip6_number" =~ ^[0-9]+$ && "$ip6_number" -le "$number_of_ip6" ]]; do
-			echo "$ip6_number: invalid selection."
+		
+		if [ "$WIZZARD" = true ]; then
+			echo "Which IPv6 address should be used?"
+			ip -6 addr | grep 'inet6 [23]' | cut -d '/' -f 1 | grep -oE '([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}' | nl -s ') '
 			read -p "IPv6 address [1]: " ip6_number
-		done
+			until [[ -z "$ip6_number" || "$ip6_number" =~ ^[0-9]+$ && "$ip6_number" -le "$number_of_ip6" ]]; do
+				echo "$ip6_number: invalid selection."
+				read -p "IPv6 address [1]: " ip6_number
+			done
+		fi
 		[[ -z "$ip6_number" ]] && ip6_number="1"
 		ip6=$(ip -6 addr | grep 'inet6 [23]' | cut -d '/' -f 1 | grep -oE '([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}' | sed -n "$ip6_number"p)
 	fi
-	echo
-	echo "Which protocol should OpenVPN use?"
-	echo "   1) UDP (recommended)"
-	echo "   2) TCP"
-	read -p "Protocol [1]: " protocol
-	until [[ -z "$protocol" || "$protocol" =~ ^[12]$ ]]; do
-		echo "$protocol: invalid selection."
+	
+	if [ -n $PROTOCOL]; then
+		protocol=$PROTOCOL
+	elif [ "$WIZZARD" = true ]; then
+		echo
+		echo "Which protocol should OpenVPN use?"
+		echo "   1) UDP (recommended)"
+		echo "   2) TCP"
 		read -p "Protocol [1]: " protocol
-	done
-	case "$protocol" in
-		1|"") 
-		protocol=udp
-		;;
-		2) 
-		protocol=tcp
-		;;
-	esac
-	echo
-	echo "What port should OpenVPN listen to?"
-	read -p "Port [1194]: " port
-	until [[ -z "$port" || "$port" =~ ^[0-9]+$ && "$port" -le 65535 ]]; do
-		echo "$port: invalid port."
+		until [[ -z "$protocol" || "$protocol" =~ ^[12]$ ]]; do
+			echo "$protocol: invalid selection."
+			read -p "Protocol [1]: " protocol
+		done
+		case "$protocol" in
+			1|"") 
+			protocol=udp
+			;;
+			2) 
+			protocol=tcp
+			;;
+		esac
+	fi
+
+	if [ -n "$PORT" ]; then
+		port=$PORT
+	elif [ "$WIZZARD" = true ]; then
+		echo
+		echo "What port should OpenVPN listen to?"
 		read -p "Port [1194]: " port
-	done
+		until [[ -z "$port" || "$port" =~ ^[0-9]+$ && "$port" -le 65535 ]]; do
+			echo "$port: invalid port."
+			read -p "Port [1194]: " port
+		done
+	fi
 	[[ -z "$port" ]] && port="1194"
-	echo
-	echo "Select a DNS server for the clients:"
-	echo "   1) Current system resolvers"
-	echo "   2) Google"
-	echo "   3) 1.1.1.1"
-	echo "   4) OpenDNS"
-	echo "   5) Quad9"
-	echo "   6) AdGuard"
-	read -p "DNS server [1]: " dns
-	until [[ -z "$dns" || "$dns" =~ ^[1-6]$ ]]; do
-		echo "$dns: invalid selection."
+
+
+	if [ "$WIZZARD" = true ]; then
+		echo
+		echo "Select a DNS server for the clients:"
+		echo "   1) Current system resolvers"
+		echo "   2) Google"
+		echo "   3) 1.1.1.1"
+		echo "   4) OpenDNS"
+		echo "   5) Quad9"
+		echo "   6) AdGuard"
 		read -p "DNS server [1]: " dns
-	done
-	echo
-	echo "Enter a name for the first client:"
-	read -p "Name [client]: " unsanitized_client
-	# Allow a limited set of characters to avoid conflicts
-	client=$(sed 's/[^0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-]/_/g' <<< "$unsanitized_client")
+		until [[ -z "$dns" || "$dns" =~ ^[1-6]$ ]]; do
+			echo "$dns: invalid selection."
+			read -p "DNS server [1]: " dns
+		done
+	fi 
+	[[ -z "$dns"]] && dns="1"
+
+
+	if [ "$WIZZARD" = true ]; then
+		echo "Enter a name for the first client:"
+		read -p "Name [client]: " unsanitized_client
+		# Allow a limited set of characters to avoid conflicts
+		client=$(sed 's/[^0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-]/_/g' <<< "$unsanitized_client")
+	fi
 	[[ -z "$client" ]] && client="client"
 	echo
 	echo "OpenVPN installation is ready to begin."
@@ -214,7 +298,9 @@ if [[ ! -e /etc/openvpn/server/server.conf ]]; then
 			firewall="iptables"
 		fi
 	fi
+	if [ "$WIZZARD" == "true" ]; then
 	read -n1 -r -p "Press any key to continue..."
+	fi
 	# If running inside a container, disable LimitNPROC to prevent conflicts
 	if systemd-detect-virt -cq; then
 		mkdir /etc/systemd/system/openvpn-server@server.service.d/ 2>/dev/null
@@ -287,7 +373,7 @@ server 10.8.0.0 255.255.255.0" > /etc/openvpn/server/server.conf
 	echo 'ifconfig-pool-persist ipp.txt' >> /etc/openvpn/server/server.conf
 	# DNS
 	case "$dns" in
-		1|"")
+		1|""|"local")
 			# Locate the proper resolv.conf
 			# Needed for systems running systemd-resolved
 			if grep '^nameserver' "/etc/resolv.conf" | grep -qv '127.0.0.53' ; then
@@ -300,23 +386,23 @@ server 10.8.0.0 255.255.255.0" > /etc/openvpn/server/server.conf
 				echo "push \"dhcp-option DNS $line\"" >> /etc/openvpn/server/server.conf
 			done
 		;;
-		2)
+		2|"google")
 			echo 'push "dhcp-option DNS 8.8.8.8"' >> /etc/openvpn/server/server.conf
 			echo 'push "dhcp-option DNS 8.8.4.4"' >> /etc/openvpn/server/server.conf
 		;;
-		3)
+		3|"1.1.1.1")
 			echo 'push "dhcp-option DNS 1.1.1.1"' >> /etc/openvpn/server/server.conf
 			echo 'push "dhcp-option DNS 1.0.0.1"' >> /etc/openvpn/server/server.conf
 		;;
-		4)
+		4|"opendns")
 			echo 'push "dhcp-option DNS 208.67.222.222"' >> /etc/openvpn/server/server.conf
 			echo 'push "dhcp-option DNS 208.67.220.220"' >> /etc/openvpn/server/server.conf
 		;;
-		5)
+		5|"quad9")
 			echo 'push "dhcp-option DNS 9.9.9.9"' >> /etc/openvpn/server/server.conf
 			echo 'push "dhcp-option DNS 149.112.112.112"' >> /etc/openvpn/server/server.conf
 		;;
-		6)
+		6|"adguard")
 			echo 'push "dhcp-option DNS 94.140.14.14"' >> /etc/openvpn/server/server.conf
 			echo 'push "dhcp-option DNS 94.140.15.15"' >> /etc/openvpn/server/server.conf
 		;;
