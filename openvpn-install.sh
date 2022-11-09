@@ -5,11 +5,10 @@
 # Copyright (c) 2013 Nyr. Released under the MIT License.
 
 # Make sure only root can run our script
-if [ ! -d "${ROOT}" ]; then
-	echo "This script must be run as root" 1>&2
-	exit 1
+if [ "$EUID" -ne 0 ]
+  then echo "Please run as root"
+  exit
 fi
-
 
 
 
