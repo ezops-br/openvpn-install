@@ -1,20 +1,39 @@
-**New: [wireguard-install](https://github.com/Nyr/wireguard-install) is also available.**
+# How to use
+### ⚠️ This script work with Ubuntu 20.04.0 ami ⚠️
 
-## openvpn-install
-OpenVPN [road warrior](http://en.wikipedia.org/wiki/Road_warrior_%28computing%29) installer for Ubuntu, Debian, AlmaLinux, Rocky Linux, CentOS and Fedora.
+- Upload vpn template to cloudformation
+- Click on the "resources" tab, on the cloudformation stacks page, then on the AutoScalingGroup link
 
-This script will let you set up your own VPN server in no more than a minute, even if you haven't used OpenVPN before. It has been designed to be as unobtrusive and universal as possible.
+![screenshot01](./screenshots/screen01.png)
+- Then click on "instance management", choose the VPN instance and click on it
 
-### Installation
-Run the script and follow the assistant:
+![screenshot02](./screenshots/screen02.png)
 
-`wget https://git.io/vpn -O openvpn-install.sh && bash openvpn-install.sh`
+- Then click on the connect button and choose the best option to connect to the instance. In this example, we will connect to EC2 directly through the AWS platform. Then click in connect orange button
 
-Once it ends, you can run it again to add more users, remove some of them or even completely uninstall OpenVPN.
+![screenshot03](./screenshots/screen03.png)
+![screenshot04](./screenshots/screen04.png)
 
-### I want to run my own VPN but don't have a server for that
-You can get a VPS from just 2€/month at [AlphaVPS](https://alphavps.com/clients/aff.php?aff=474&pid=422).
+- A terminal will open inside the instance on another screen, similar to the picture below:
 
-### Donations
+![screenshot05](./screenshots/screen05.png)
 
-If you want to show your appreciation, you can donate via [PayPal](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=VBAYDL34Z7J6L) or [cryptocurrency](https://pastebin.com/raw/M2JJpQpC). Thanks!
+- We need to get the vpn client file generated, then run the "ls" command
+
+- With the client.ovpn file generated, we need to copy its content to a file on our local machine, for that we will issue the command "cat client.ovpn". And this is the result:
+
+![screenshot06](./screenshots/screen06.png)
+![screenshot07](./screenshots/screen07.png)
+
+- The content must be copied to an external file with the ".ovpn" extension. After that, we need to test the connection to the VPN, for that we will use the "OpenVPN Connect" program. Tool download link [here( for windows)](https://openvpn.net/client-connect-vpn-for-windows/)
+
+![screenshot08](./screenshots/screen08.png)
+
+- After installing the tool, open the program and click on the file tab. Then import the file with the client content and click on connect, like the images below:
+
+![screenshot09](./screenshots/screen09.png)
+![screenshot10](./screenshots/screen10.png)
+
+- VPN connected
+
+![screenshot11](./screenshots/screen11.png)
