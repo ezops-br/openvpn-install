@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: settup VPN
+Parameters:
+  ClusterName:
+    Type: String
+    Default: VPN
+  ECSInstanceType:
+    Type: String
+    Default: t2.small
+  KeyName:
+    Type: String
+    Default: key-dev-vpn-us-west-2
+  AsgServiceMin:
+    Type: String
+    Default: 1
+  AsgServiceDesired:
+    Type: String
+    Default: 1
+  AsgServiceMax:
+    Type: String
+    Default: 2
+  EcsImage:
+    Type: String
+    Default: ami-09e67e426f25ce0d7
+  EbsEncrypted:
+    Type: String
+    Default: "yes"
+  S3BUCKET:
+    Type: String
+    Default: openvpn-script
+  VpcId:
+    Type: String
+    Default: "vpc-0caf3f36d4e3fbfea"
+
+Conditions:
+  isEbsEncrypted: !Equals
+    - !Ref EbsEncrypted
+    - "yes"
+
+Resources:
+  EIP:
+    Type: "AWS::EC2::EIP"
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-cluster-vpn"
+  VpnSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      VpcId: !ImportValue
+        "Fn::Sub": "${ClusterName}-VPC"
+      GroupName: !Sub "${ClusterName}-vpn"
+      GroupDescription: Enables VPN access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 1194
+          ToPort: 1194
+          CidrIp: 0.0.0.0/0
+  PublicAlbDefaultTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub public-tg-${ClusterName}
+      VpcId:
+        "Fn::ImportValue": !Sub ${ClusterName}-VPC
+      Port: 80
+      Protocol: HTTP
+      Matcher:
+        HttpCode: "301,200"
+      HealthCheckIntervalSeconds: 300
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 120
+      HealthyThresholdCount: 2
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::Region}-${ClusterName}_EC2Role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonSSMFullAccess"
+        - "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+        - "arn:aws:iam::aws:policy/AmazonEC2FullAccess"
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EC2Role
+      InstanceProfileName: !Sub ${AWS::Region}-${ClusterName}_EC2InstanceProfile
+  LaunchConfiguration:
+    Type: "AWS::AutoScaling::LaunchConfiguration"
+    DependsOn: EIP
+    Properties:
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      KeyName: !Ref KeyName
+      ImageId: !Ref EcsImage
+      SecurityGroups:
+        - !ImportValue
+          "Fn::Sub": "${ClusterName}-InternalAccessSecurityGroup"
+        - !Ref VpnSecurityGroup
+      InstanceType: !Ref ECSInstanceType
+      AssociatePublicIpAddress: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            Encrypted: !If
+              - isEbsEncrypted
+              - true
+              - !Ref "AWS::NoValue"
+            VolumeSize: "30"
+            VolumeType: gp2
+      InstanceMonitoring: false
+      UserData: !Base64
+        "Fn::Sub": >
+          #!/bin/bash -x
+
+          exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+
+          #====== Resize EBS
+
+          resize2fs /dev/xvda
+
+          #====== SSM
+
+          snap install amazon-ssm-agent --classic; sudo snap services amazon-ssm-agent
+
+          #====== dependencies
+
+          apt update; apt install -y jq unzip
+
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"; unzip awscliv2.zip; ./aws/install
+
+          #====== elastic IP
+
+          EIP_ALLOCATION_ID=$(aws ec2 describe-addresses --filters "Name=tag:Name,Values=${ClusterName}-cluster-vpn" --region ${AWS::Region} | jq -r '.Addresses | .[] | .AllocationId')
+
+          INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+
+          aws ec2 disassociate-address --public-ip ${EIP}
+
+          aws ec2 associate-address --instance-id $INSTANCE_ID --allocation-id $EIP_ALLOCATION_ID
+
+          #====== openvpn
+
+          aws s3 cp s3://${S3BUCKET}/openvpn-install-with-params.sh .; chmod +x openvpn-install-with-params.sh
+
+          ./openvpn-install-with-params.sh ${EIP}
+
+          cp /root/client.ovpn /home/ubuntu/
+
+          aws s3 cp /root/client.ovpn s3://${S3BUCKET}/client.ovpn
+  AutoScalingGroup:
+    Type: "AWS::AutoScaling::AutoScalingGroup"
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName} cluster vpn"
+          PropagateAtLaunch: true
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MinSize: !Ref AsgServiceMin
+      DesiredCapacity: !Ref AsgServiceDesired
+      MaxSize: !Ref AsgServiceMax
+      TargetGroupARNs:
+        - !Ref PublicAlbDefaultTargetGroup
+      VPCZoneIdentifier:
+        - !ImportValue
+          "Fn::Sub": "${ClusterName}-PublicSubnet1"
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize: 1
+        MinInstancesInService: !Ref AsgServiceDesired
+        PauseTime: PT5M
+Outputs:
+  AutoScalingGroup:
+    Value: !Ref AutoScalingGroup
+    Export:
+      Name: !Sub "${ClusterName}AutoScalingGroup-vpn"
+  EIP:
+    Value: !Ref EIP
+    Export:
+      Name: !Sub "${ClusterName}-elastic-ip-vpn"
